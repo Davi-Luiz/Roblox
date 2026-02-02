@@ -1,9 +1,12 @@
-import os
 import io
-import time
 import json
-import requests
+import os
+import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional, Tuple
+
+import requests
 
 from goes2go import GOES
 from PIL import Image
@@ -13,10 +16,10 @@ from rembg import remove
 # CONFIGURAÇÕES DO DAVI
 # =========================
 
-ROBLOX_API_KEY = os.environ("ROBLOX_API_KEY")
-USER_ID = 3538598020
+ROBLOX_API_KEY = os.environ.get("ROBLOX_API_KEY")
+USER_ID = int(os.environ.get("ROBLOX_USER_ID", "3538598020"))
 
-DECAL_ID_TO_UPDATE = 79946879599509
+DECAL_ID_TO_UPDATE = int(os.environ.get("ROBLOX_DECAL_ID", "79946879599509"))
 
 # Canal GOES (GeoColor é o mais bonito)
 PRODUCT = "GeoColor"
@@ -31,15 +34,52 @@ ROBLOX_UPLOAD_URL = "https://apis.roblox.com/assets/v1/assets"
 # Endpoint "update/overwrite" pode variar e pode não funcionar dependendo do tipo/perm:
 ROBLOX_UPDATE_URL = f"https://apis.roblox.com/assets/v1/assets/{DECAL_ID_TO_UPDATE}"
 
-HEADERS = {
-    "x-api-key": ROBLOX_API_KEY,
-}
+DEFAULT_HEADERS = {"x-api-key": ROBLOX_API_KEY}
+DEFAULT_TIMEOUT = 120
+DOWNLOAD_TIMEOUT = 60
+MAX_RETRIES = 3
+
+
+@dataclass(frozen=True)
+class RobloxConfig:
+    api_key: str
+    user_id: int
+    decal_id: int
+
+
+def _build_headers(config: RobloxConfig) -> dict:
+    return {"x-api-key": config.api_key}
+
+
+def _http_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict,
+    files: Optional[dict] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    retries: int = MAX_RETRIES,
+) -> requests.Response:
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.request(
+                method, url, headers=headers, files=files, timeout=timeout
+            )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            print(f"⚠️ Falha na requisição (tentativa {attempt}/{retries}): {exc}")
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise RuntimeError(f"Falha na requisição após {retries} tentativas.") from last_error
 
 # =========================
 # FUNÇÕES
 # =========================
 
-def baixar_goes19_geocolor():
+def baixar_goes19_geocolor() -> bytes:
     """
     Usa goes2go para baixar GOES-19 (ABI Full Disk GeoColor).
     Retorna bytes da imagem PNG/JPG.
@@ -66,12 +106,17 @@ def baixar_goes19_geocolor():
         # fallback (muito usado e funciona bem)
         # GOES-19 CDN da NOAA (se o caminho mudar você me fala que eu ajusto)
         url = "https://cdn.star.nesdis.noaa.gov/GOES19/ABI/FD/GEOCOLOR/latest.jpg"
-        r = requests.get(url, timeout=60)
-        r.raise_for_status()
-        return r.content
+        response = _http_request(
+            "GET",
+            url,
+            headers={},
+            timeout=DOWNLOAD_TIMEOUT,
+            retries=MAX_RETRIES,
+        )
+        return response.content
 
 
-def remover_fundo_ia(image_bytes):
+def remover_fundo_ia(image_bytes: bytes) -> bytes:
     """
     Remove fundo com rembg.
     Retorna bytes PNG com alpha.
@@ -98,7 +143,9 @@ def remover_fundo_ia(image_bytes):
     return buf.getvalue()
 
 
-def upload_decal_roblox(image_png_bytes):
+def upload_decal_roblox(
+    config: RobloxConfig, image_png_bytes: bytes
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Faz upload como novo Decal.
     Retorna assetId do novo decal.
@@ -113,7 +160,7 @@ def upload_decal_roblox(image_png_bytes):
         "description": "Imagem GOES-19 (automática) com fundo removido",
         "creationContext": {
             "creator": {
-                "userId": USER_ID
+                "userId": config.user_id
             }
         }
     }
@@ -123,13 +170,17 @@ def upload_decal_roblox(image_png_bytes):
         "fileContent": ("goes19.png", image_png_bytes, "image/png")
     }
 
-    r = requests.post(ROBLOX_UPLOAD_URL, headers=HEADERS, files=files, timeout=120)
-    print("Status:", r.status_code)
-    if r.status_code not in (200, 201):
-        print("Resposta:", r.text)
-        raise Exception("Falha no upload do decal")
+    response = _http_request(
+        "POST",
+        ROBLOX_UPLOAD_URL,
+        headers=_build_headers(config),
+        files=files,
+        timeout=DEFAULT_TIMEOUT,
+        retries=MAX_RETRIES,
+    )
+    print("Status:", response.status_code)
 
-    data = r.json()
+    data = response.json()
     # Normalmente vem algo como:
     # {"assetId":"123", "operationId":"..."}
     asset_id = data.get("assetId")
@@ -142,7 +193,7 @@ def upload_decal_roblox(image_png_bytes):
     return asset_id, operation_id
 
 
-def tentar_overwrite_decal(image_png_bytes):
+def tentar_overwrite_decal(config: RobloxConfig, image_png_bytes: bytes) -> bool:
     """
     Tenta atualizar o mesmo asset do decal.
     Pode falhar dependendo da permissão/API.
@@ -160,12 +211,18 @@ def tentar_overwrite_decal(image_png_bytes):
         "fileContent": ("goes19.png", image_png_bytes, "image/png")
     }
 
-    r = requests.patch(ROBLOX_UPDATE_URL, headers=HEADERS, files=files, timeout=120)
-
-    print("Status:", r.status_code)
-    print("Resposta:", r.text)
-
-    if r.status_code not in (200, 201):
+    try:
+        response = _http_request(
+            "PATCH",
+            ROBLOX_UPDATE_URL,
+            headers=_build_headers(config),
+            files=files,
+            timeout=DEFAULT_TIMEOUT,
+            retries=MAX_RETRIES,
+        )
+        print("Status:", response.status_code)
+        print("Resposta:", response.text)
+    except RuntimeError:
         print("⚠️ Não foi possível sobrescrever (provavelmente a API não permite overwrite nesse caso).")
         return False
 
@@ -173,9 +230,20 @@ def tentar_overwrite_decal(image_png_bytes):
     return True
 
 
-def main():
+def _build_config() -> RobloxConfig:
     if not ROBLOX_API_KEY:
-        raise Exception("❌ ROBLOX_API_KEY não está definida. Coloque nos secrets/env.")
+        raise RuntimeError(
+            "❌ ROBLOX_API_KEY não está definida. Coloque nos secrets/env."
+        )
+    return RobloxConfig(
+        api_key=ROBLOX_API_KEY,
+        user_id=USER_ID,
+        decal_id=DECAL_ID_TO_UPDATE,
+    )
+
+
+def main() -> None:
+    config = _build_config()
 
     print("=== GOES-19 -> Remover fundo -> Roblox Decal ===")
 
@@ -186,11 +254,11 @@ def main():
     png_bytes = remover_fundo_ia(img_bytes)
 
     # 3) tenta overwrite (se der)
-    ok = tentar_overwrite_decal(png_bytes)
+    ok = tentar_overwrite_decal(config, png_bytes)
 
     # 4) se overwrite falhar, faz upload novo
     if not ok:
-        asset_id, operation_id = upload_decal_roblox(png_bytes)
+        asset_id, operation_id = upload_decal_roblox(config, png_bytes)
         print("\n✅ Novo decal criado!")
         print("➡️ Novo assetId:", asset_id)
         print("➡️ operationId:", operation_id)
