@@ -9,6 +9,55 @@ from typing import Optional
 
 import requests
 from PIL import Image, ImageDraw
+import re
+from typing import Any, Optional
+
+def extrair_asset_id(obj: Any) -> Optional[str]:
+    """
+    Tenta encontrar o assetId verdadeiro em formatos comuns:
+    - assetId numérico (int/str)
+    - response.path = "assets/<id>" ou "assets/<id>/versions/<n>"
+    - path = "assets/<id>..."
+    Retorna o ID como string, ou None.
+    """
+    # 1) assetId direto
+    for key in ("assetId", "asset_id", "assetID"):
+        if isinstance(obj, dict) and key in obj:
+            v = obj.get(key)
+            if isinstance(v, int):
+                return str(v)
+            if isinstance(v, str) and v.strip().isdigit():
+                return v.strip()
+
+    # 2) procurar em campos de "path"
+    candidates = []
+    if isinstance(obj, dict):
+        for key in ("path",):
+            if isinstance(obj.get(key), str):
+                candidates.append(obj[key])
+        # response/result/metadata podem conter path também
+        for key in ("response", "result", "metadata"):
+            sub = obj.get(key)
+            if isinstance(sub, dict) and isinstance(sub.get("path"), str):
+                candidates.append(sub["path"])
+
+    # Extrai assets/<digits> de qualquer candidate
+    for s in candidates:
+        m = re.search(r"\bassets/(\d+)\b", s)
+        if m:
+            return m.group(1)
+
+    return None
+def validar_asset_id(cfg: RobloxConfig, asset_id: str) -> bool:
+    """
+    Confere no endpoint de Asset se o ID é válido.
+    Se der 200 e o path bater com 'assets/<id>', está ok.
+    """
+    url = f"{ROBLOX_UPLOAD_URL}/{asset_id}"  # /assets/v1/assets/{assetId}
+    r = _http_request("GET", url, headers=_headers(cfg))
+    data = r.json()
+    path = (data.get("path") or "").strip()
+    return path.startswith(f"assets/{asset_id}")
 
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
@@ -135,32 +184,35 @@ def esperar_operation_e_pegar_asset_id(cfg: RobloxConfig, operation_id: str, tim
     start = time.time()
     url = f"{ROBLOX_OPERATIONS_URL}/{operation_id}"
 
+    last_json = None
+
     while True:
         if time.time() - start > timeout_sec:
-            raise RuntimeError("⏱️ Timeout esperando operação do Roblox.")
+            raise RuntimeError(f"⏱️ Timeout esperando operação do Roblox. Ultimo JSON={last_json}")
 
         r = _http_request("GET", url, headers=_headers(cfg))
         data = r.json()
+        last_json = data
 
         status = data.get("status") or data.get("done") or data.get("state")
         print("🔎 Operation status:", status)
 
-        # tenta achar assetId em campos comuns
-        asset_id = (
-            data.get("assetId")
-            or (data.get("response") or {}).get("assetId")
-            or (data.get("result") or {}).get("assetId")
-            or (data.get("metadata") or {}).get("assetId")
-        )
+        # ✅ pega o assetId “de verdade”, mesmo se vier em response.path
+        asset_id = extrair_asset_id(data)
 
         if asset_id:
-            return str(asset_id)
+            # ✅ valida antes de salvar (evita gravar ID errado)
+            if validar_asset_id(cfg, asset_id):
+                return asset_id
+            else:
+                print(f"⚠️ Achei um assetId ({asset_id}) mas nao validou ainda. Vou continuar esperando...")
 
         if "error" in data:
             raise RuntimeError(f"❌ Operação retornou erro: {data['error']}")
 
+        # Se marcou como concluído mas ainda não achou asset válido:
         if str(status).lower() in ("done", "completed", "success", "succeeded", "true"):
-            raise RuntimeError(f"❌ Terminou sem assetId. JSON={data}")
+            raise RuntimeError(f"❌ Operação terminou mas não encontrei assetId válido. JSON={data}")
 
         time.sleep(3)
 
