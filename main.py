@@ -12,6 +12,9 @@ from PIL import Image, ImageDraw
 
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
+# =========================
+# CONFIG
+# =========================
 
 GOES19_URL = os.environ.get(
     "GOES19_URL",
@@ -23,6 +26,9 @@ MAX_SIZE = int(os.environ.get("MAX_SIZE") or "1024")
 ROBLOX_API_KEY = os.environ.get("ROBLOX_API_KEY")
 ROBLOX_USER_ID = int(os.environ.get("ROBLOX_USER_ID") or "3538598020")
 
+# ESSENCIAL PARA JOGO DE GRUPO:
+ROBLOX_GROUP_ID = int(os.environ.get("ROBLOX_GROUP_ID") or "0")
+
 OUT_FILE = os.environ.get("OUT_FILE", "latest_decal_id.txt")
 
 DEFAULT_TIMEOUT = 120
@@ -32,15 +38,21 @@ MAX_RETRIES = 3
 ROBLOX_UPLOAD_URL = "https://apis.roblox.com/assets/v1/assets"
 ROBLOX_OPERATIONS_URL = "https://apis.roblox.com/assets/v1/operations"
 
-# ⚠️ esse endpoint pode não funcionar pra decal (depende da API/permissões)
-ROBLOX_DELETE_ASSET_URL = "https://apis.roblox.com/assets/v1/assets"
 
+# =========================
+# DATA
+# =========================
 
 @dataclass(frozen=True)
 class RobloxConfig:
     api_key: str
     user_id: int
+    group_id: int
 
+
+# =========================
+# HTTP
+# =========================
 
 def _headers(cfg: RobloxConfig) -> dict:
     return {"x-api-key": cfg.api_key}
@@ -70,12 +82,20 @@ def _http_request(
     raise RuntimeError(f"Falha na requisição após {retries} tentativas.") from last_error
 
 
+# =========================
+# GOES
+# =========================
+
 def baixar_goes19() -> bytes:
     print("📡 Baixando imagem GOES-19...")
     r = _http_request("GET", GOES19_URL, headers={}, timeout=DOWNLOAD_TIMEOUT)
     print(f"✅ Baixado ({len(r.content)/1024:.1f} KB)")
     return r.content
 
+
+# =========================
+# IMAGE
+# =========================
 
 def recorte_circular_png(image_bytes: bytes) -> bytes:
     print("🖼️ Recorte circular + alpha...")
@@ -105,23 +125,27 @@ def recorte_circular_png(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+# =========================
+# ROBLOX
+# =========================
+
 def esperar_operation_e_pegar_asset_id(cfg: RobloxConfig, operation_id: str, timeout_sec: int = 240) -> str:
-    print("⏳ Esperando operação...")
+    print("⏳ Esperando Roblox processar operação...")
 
     start = time.time()
     url = f"{ROBLOX_OPERATIONS_URL}/{operation_id}"
 
     while True:
         if time.time() - start > timeout_sec:
-            raise RuntimeError("⏱️ Timeout esperando operação.")
+            raise RuntimeError("⏱️ Timeout esperando operação do Roblox.")
 
         r = _http_request("GET", url, headers=_headers(cfg))
         data = r.json()
 
         status = data.get("status") or data.get("done") or data.get("state")
-        print("🔎 status:", status)
+        print("🔎 Operation status:", status)
 
-        # tenta achar assetId onde quer que esteja
+        # tenta achar assetId em campos comuns
         asset_id = (
             data.get("assetId")
             or (data.get("response") or {}).get("assetId")
@@ -133,7 +157,7 @@ def esperar_operation_e_pegar_asset_id(cfg: RobloxConfig, operation_id: str, tim
             return str(asset_id)
 
         if "error" in data:
-            raise RuntimeError(f"❌ Operação com erro: {data['error']}")
+            raise RuntimeError(f"❌ Operação retornou erro: {data['error']}")
 
         if str(status).lower() in ("done", "completed", "success", "succeeded", "true"):
             raise RuntimeError(f"❌ Terminou sem assetId. JSON={data}")
@@ -141,15 +165,23 @@ def esperar_operation_e_pegar_asset_id(cfg: RobloxConfig, operation_id: str, tim
         time.sleep(3)
 
 
-def upload_decal(cfg: RobloxConfig, png_bytes: bytes) -> str:
-    print("☁️ Upload decal novo...")
+def upload_decal_grupo(cfg: RobloxConfig, png_bytes: bytes) -> str:
+    print("☁️ Upload decal novo (GRUPO)...")
+
+    if cfg.group_id <= 0:
+        raise RuntimeError("❌ ROBLOX_GROUP_ID inválido. Configure para o ID do grupo.")
 
     agora = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
+
     payload = {
         "assetType": "Decal",
         "displayName": f"GOES19_{agora}",
         "description": "GOES-19 GeoColor recorte circular automatico",
-        "creationContext": {"creator": {"userId": cfg.user_id}},
+        "creationContext": {
+            "creator": {
+                "groupId": cfg.group_id
+            }
+        },
     }
 
     files = {
@@ -161,78 +193,56 @@ def upload_decal(cfg: RobloxConfig, png_bytes: bytes) -> str:
     data = r.json()
 
     operation_id = data.get("operationId")
+    asset_id_early = data.get("assetId")
+
+    print("operationId:", operation_id)
+    print("assetId (se vier):", asset_id_early)
+
     if not operation_id:
         raise RuntimeError(f"❌ Upload não retornou operationId. Resposta: {data}")
 
     return esperar_operation_e_pegar_asset_id(cfg, operation_id)
 
 
-def ler_id_antigo(path: str) -> Optional[str]:
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            old_id = f.read().strip()
-        return old_id or None
-    except Exception:
-        return None
-
-
 def salvar_asset_id(asset_id: str, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(asset_id.strip() + "\n")
-    print(f"💾 Atualizei {path}: {asset_id}")
-
-
-def tentar_deletar_asset(cfg: RobloxConfig, asset_id: str) -> bool:
-    """
-    Tenta deletar o asset antigo.
-    Pode falhar pois Roblox nem sempre permite delete via Open Cloud.
-    """
     asset_id = (asset_id or "").strip()
     if not asset_id:
-        return False
+        raise RuntimeError("❌ assetId veio vazio.")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(asset_id + "\n")
+    print(f"💾 latest saved: {path} -> {asset_id}")
 
-    print(f"🗑️ Tentando deletar asset antigo: {asset_id}")
 
-    url = f"{ROBLOX_DELETE_ASSET_URL}/{asset_id}"
-
-    try:
-        r = _http_request("DELETE", url, headers=_headers(cfg), timeout=DEFAULT_TIMEOUT, retries=1)
-        print("✅ Delete OK:", r.status_code)
-        return True
-    except Exception as e:
-        print("⚠️ Não consegui deletar (normal):", e)
-        return False
-
+# =========================
+# MAIN
+# =========================
 
 def build_config() -> RobloxConfig:
     if not ROBLOX_API_KEY:
-        raise RuntimeError("❌ ROBLOX_API_KEY não definido.")
-    return RobloxConfig(api_key=ROBLOX_API_KEY, user_id=ROBLOX_USER_ID)
+        raise RuntimeError("❌ ROBLOX_API_KEY não definido (Secrets).")
+    if ROBLOX_GROUP_ID <= 0:
+        raise RuntimeError("❌ ROBLOX_GROUP_ID não definido / inválido (Vars).")
+
+    return RobloxConfig(
+        api_key=ROBLOX_API_KEY,
+        user_id=ROBLOX_USER_ID,
+        group_id=ROBLOX_GROUP_ID,
+    )
 
 
 def main():
-    print("=== GOES-19 -> Roblox Decal (upload + delete antigo) ===")
+    print("=== GOES-19 -> Roblox Decal (GROUP UPLOAD) ===")
+
     cfg = build_config()
+    print("GroupId:", cfg.group_id)
 
-    old_id = ler_id_antigo(OUT_FILE)
-    if old_id:
-        print("📌 ID antigo:", old_id)
-    else:
-        print("📌 Sem ID antigo ainda.")
+    goes = baixar_goes19()
+    png = recorte_circular_png(goes)
 
-    goes_bytes = baixar_goes19()
-    png_bytes = recorte_circular_png(goes_bytes)
+    asset_id = upload_decal_grupo(cfg, png)
+    print("🆕 Novo assetId:", asset_id)
 
-    new_id = upload_decal(cfg, png_bytes)
-    print("🆕 Novo assetId:", new_id)
-
-    salvar_asset_id(new_id, OUT_FILE)
-
-    # tenta deletar o antigo depois de salvar o novo (mais seguro)
-    if old_id and old_id != new_id:
-        tentar_deletar_asset(cfg, old_id)
+    salvar_asset_id(asset_id, OUT_FILE)
 
     print("✅ Finalizado!")
 
