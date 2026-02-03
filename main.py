@@ -12,6 +12,50 @@ from PIL import Image, ImageDraw
 import re
 from typing import Any, Optional
 
+warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
+
+# =========================
+# CONFIG
+# =========================
+
+GOES19_URL = os.environ.get(
+    "GOES19_URL",
+    "https://cdn.star.nesdis.noaa.gov/GOES19/ABI/FD/GEOCOLOR/latest.jpg",
+)
+
+MAX_SIZE = int(os.environ.get("MAX_SIZE") or "1024")
+
+ROBLOX_API_KEY = os.environ.get("ROBLOX_API_KEY")
+ROBLOX_USER_ID = int(os.environ.get("ROBLOX_USER_ID") or "3538598020")
+
+# ESSENCIAL PARA JOGO DE GRUPO:
+ROBLOX_GROUP_ID = int(os.environ.get("ROBLOX_GROUP_ID") or "0")
+
+OUT_FILE = os.environ.get("OUT_FILE", "latest_decal_id.txt")
+
+DEFAULT_TIMEOUT = 120
+DOWNLOAD_TIMEOUT = 60
+MAX_RETRIES = 3
+
+ROBLOX_UPLOAD_URL = "https://apis.roblox.com/assets/v1/assets"
+ROBLOX_OPERATIONS_URL = "https://apis.roblox.com/assets/v1/operations"
+
+
+# =========================
+# DATA
+# =========================
+
+@dataclass(frozen=True)
+class RobloxConfig:
+    api_key: str
+    user_id: int
+    group_id: int
+
+
+# =========================
+# HTTP
+# =========================
+
 def extrair_asset_id(obj: Any) -> Optional[str]:
     """
     Tenta encontrar o assetId verdadeiro em formatos comuns:
@@ -59,49 +103,6 @@ def validar_asset_id(cfg: RobloxConfig, asset_id: str) -> bool:
     path = (data.get("path") or "").strip()
     return path.startswith(f"assets/{asset_id}")
 
-warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
-
-# =========================
-# CONFIG
-# =========================
-
-GOES19_URL = os.environ.get(
-    "GOES19_URL",
-    "https://cdn.star.nesdis.noaa.gov/GOES19/ABI/FD/GEOCOLOR/latest.jpg",
-)
-
-MAX_SIZE = int(os.environ.get("MAX_SIZE") or "1024")
-
-ROBLOX_API_KEY = os.environ.get("ROBLOX_API_KEY")
-ROBLOX_USER_ID = int(os.environ.get("ROBLOX_USER_ID") or "3538598020")
-
-# ESSENCIAL PARA JOGO DE GRUPO:
-ROBLOX_GROUP_ID = int(os.environ.get("ROBLOX_GROUP_ID") or "0")
-
-OUT_FILE = os.environ.get("OUT_FILE", "latest_decal_id.txt")
-
-DEFAULT_TIMEOUT = 120
-DOWNLOAD_TIMEOUT = 60
-MAX_RETRIES = 3
-
-ROBLOX_UPLOAD_URL = "https://apis.roblox.com/assets/v1/assets"
-ROBLOX_OPERATIONS_URL = "https://apis.roblox.com/assets/v1/operations"
-
-
-# =========================
-# DATA
-# =========================
-
-@dataclass(frozen=True)
-class RobloxConfig:
-    api_key: str
-    user_id: int
-    group_id: int
-
-
-# =========================
-# HTTP
-# =========================
 
 def _headers(cfg: RobloxConfig) -> dict:
     return {"x-api-key": cfg.api_key}
