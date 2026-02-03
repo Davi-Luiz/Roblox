@@ -33,7 +33,7 @@ jobs:
           MAX_SIZE: ${{ vars.MAX_SIZE }}
           OUT_FILE: latest_decal_id.txt
         run: |
-          python goes_to_roblox.py
+          python main.py
 
       - name: Commit latest_decal_id.txt
         run: |
