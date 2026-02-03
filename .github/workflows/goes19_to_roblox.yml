@@ -1,0 +1,33 @@
+name: GOES-19 -> Roblox Decal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"  # a cada 15 minutos
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          ROBLOX_USER_ID: ${{ vars.ROBLOX_USER_ID }}
+          ROBLOX_DECAL_ID: ${{ vars.ROBLOX_DECAL_ID }}
+          MAX_SIZE: ${{ vars.MAX_SIZE }}
+        run: |
+          python goes_to_roblox.py
