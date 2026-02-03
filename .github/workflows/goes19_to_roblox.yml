@@ -3,7 +3,10 @@ name: GOES-19 -> Roblox Decal
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"  # a cada 15 minutos
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
 
 jobs:
   run:
@@ -27,7 +30,15 @@ jobs:
         env:
           ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
           ROBLOX_USER_ID: ${{ vars.ROBLOX_USER_ID }}
-          ROBLOX_DECAL_ID: ${{ vars.ROBLOX_DECAL_ID }}
           MAX_SIZE: ${{ vars.MAX_SIZE }}
+          OUT_FILE: latest_decal_id.txt
         run: |
           python goes_to_roblox.py
+
+      - name: Commit latest_decal_id.txt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add latest_decal_id.txt
+          git commit -m "Update latest decal id" || echo "No changes"
+          git push
