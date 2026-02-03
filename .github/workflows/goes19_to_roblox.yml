@@ -1,4 +1,4 @@
-name: GOES-19 -> Roblox Decal
+name: GOES-19 -> Roblox Decal (Group)
 
 on:
   workflow_dispatch:
@@ -30,15 +30,23 @@ jobs:
         env:
           ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
           ROBLOX_USER_ID: ${{ vars.ROBLOX_USER_ID }}
+          ROBLOX_GROUP_ID: ${{ vars.ROBLOX_GROUP_ID }}
           MAX_SIZE: ${{ vars.MAX_SIZE }}
           OUT_FILE: latest_decal_id.txt
         run: |
           python main.py
 
+      - name: Debug latest_decal_id.txt
+        run: |
+          ls -lah
+          echo "-----------------"
+          cat latest_decal_id.txt
+
       - name: Commit latest_decal_id.txt
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add latest_decal_id.txt
           git commit -m "Update latest decal id" || echo "No changes"
           git push
