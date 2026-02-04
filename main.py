@@ -13,7 +13,7 @@ import re
 from typing import Any, Optional
 
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
-
+exit(0)
 # =========================
 # CONFIG
 # =========================
