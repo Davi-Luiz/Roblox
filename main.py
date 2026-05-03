@@ -164,9 +164,13 @@ def esperar_operation(cfg: RobloxConfig, op_id: str) -> str:
     url = f"{ROBLOX_OPERATIONS_URL}/{op_id}"
     start = time.time()
 
+    # 10 minutos de timeout (evita crash em operações lentas)
+    TIMEOUT = 600
+
     while True:
-        if time.time() - start > 240:
-            raise RuntimeError("timeout operação")
+        if time.time() - start > TIMEOUT:
+            print("⚠️ operação demorou demais, mas o script não vai quebrar imediatamente")
+            raise RuntimeError("timeout operação (10 min)")
 
         r = _http_request("GET", url, headers=_headers(cfg))
         data = r.json()
